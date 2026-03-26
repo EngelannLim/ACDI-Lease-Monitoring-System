@@ -1,6 +1,6 @@
 import sys
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QSizePolicy,
     QFrame,
+    QToolButton,
+    QMenu,
 )
 
 from shared_data import store
@@ -32,7 +34,6 @@ class LeaseMonitoringWindow(QMainWindow):
         self.current_theme = "dark"
 
         self.stacked = QStackedWidget()
-
         self.main_page = self.build_main_dashboard_page()
         self.expiry_page = self.build_contract_expiry_page()
 
@@ -43,7 +44,47 @@ class LeaseMonitoringWindow(QMainWindow):
         self.apply_theme(self.current_theme)
 
     # =========================================================
-    # PAGE BUILDERS
+    # COMMON TOP BAR
+    # =========================================================
+    def create_top_bar(self, left_button_text, left_button_handler):
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(10)
+
+        nav_btn = QPushButton(left_button_text)
+        nav_btn.setMinimumHeight(40)
+        nav_btn.clicked.connect(left_button_handler)
+
+        settings_btn = QToolButton()
+        settings_btn.setText("⚙")
+        settings_btn.setObjectName("settingsButton")
+        settings_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+
+        settings_menu = QMenu(settings_btn)
+
+        light_action = QAction("Light Mode", self)
+        light_action.triggered.connect(lambda: self.apply_theme("light"))
+
+        dark_action = QAction("Dark Mode", self)
+        dark_action.triggered.connect(lambda: self.apply_theme("dark"))
+
+        exit_action = QAction("Exit App", self)
+        exit_action.triggered.connect(self.close)
+
+        settings_menu.addAction(light_action)
+        settings_menu.addAction(dark_action)
+        settings_menu.addSeparator()
+        settings_menu.addAction(exit_action)
+
+        settings_btn.setMenu(settings_menu)
+
+        top_bar.addWidget(nav_btn)
+        top_bar.addStretch()
+        top_bar.addWidget(settings_btn)
+
+        return top_bar
+
+    # =========================================================
+    # MAIN PAGE
     # =========================================================
     def build_main_dashboard_page(self):
         page = QWidget()
@@ -51,24 +92,8 @@ class LeaseMonitoringWindow(QMainWindow):
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
-        top_bar = QHBoxLayout()
-        top_bar.setSpacing(10)
+        root.addLayout(self.create_top_bar("Open Contract Expiry", self.show_expiry_page))
 
-        self.expiry_btn = QPushButton("Open Contract Expiry")
-        self.expiry_btn.setMinimumHeight(42)
-        self.expiry_btn.clicked.connect(self.show_expiry_page)
-
-        self.theme_btn_1 = QPushButton("Switch to Light Mode")
-        self.theme_btn_1.setMinimumHeight(42)
-        self.theme_btn_1.clicked.connect(self.toggle_theme)
-
-        top_bar.addWidget(self.expiry_btn)
-        top_bar.addWidget(self.theme_btn_1)
-        top_bar.addStretch()
-
-        root.addLayout(top_bar)
-
-        # Header card
         header_card = QFrame()
         header_card.setObjectName("headerCard")
         header_layout = QVBoxLayout(header_card)
@@ -93,7 +118,6 @@ class LeaseMonitoringWindow(QMainWindow):
 
         root.addWidget(header_card)
 
-        # Main table
         self.main_table = QTableWidget()
         main_headers = [
             "DATE RECEIVED",
@@ -145,30 +169,17 @@ class LeaseMonitoringWindow(QMainWindow):
         root.addWidget(footer_box)
         return page
 
+    # =========================================================
+    # EXPIRY PAGE
+    # =========================================================
     def build_contract_expiry_page(self):
         page = QWidget()
         root = QVBoxLayout(page)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
-        top_bar = QHBoxLayout()
-        top_bar.setSpacing(10)
+        root.addLayout(self.create_top_bar("Back to Dashboard", self.show_main_page))
 
-        self.back_btn = QPushButton("Back to Dashboard")
-        self.back_btn.setMinimumHeight(42)
-        self.back_btn.clicked.connect(self.show_main_page)
-
-        self.theme_btn_2 = QPushButton("Switch to Light Mode")
-        self.theme_btn_2.setMinimumHeight(42)
-        self.theme_btn_2.clicked.connect(self.toggle_theme)
-
-        top_bar.addWidget(self.back_btn)
-        top_bar.addWidget(self.theme_btn_2)
-        top_bar.addStretch()
-
-        root.addLayout(top_bar)
-
-        # Title + legend row
         info_row = QHBoxLayout()
         info_row.setSpacing(14)
 
@@ -196,8 +207,10 @@ class LeaseMonitoringWindow(QMainWindow):
         for row_index, (count, text) in enumerate(store.get_legend_rows()):
             count_label = QLabel(str(count))
             count_label.setObjectName("legendCount")
+
             text_label = QLabel(text)
             text_label.setObjectName("legendText")
+
             legend_layout.addWidget(count_label, row_index, 0)
             legend_layout.addWidget(text_label, row_index, 1)
 
@@ -252,6 +265,7 @@ class LeaseMonitoringWindow(QMainWindow):
         table.setAlternatingRowColors(True)
         table.setShowGrid(False)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        table.setFrameShape(QTableWidget.Shape.NoFrame)
 
         if fixed_resize:
             table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
@@ -271,25 +285,14 @@ class LeaseMonitoringWindow(QMainWindow):
         table.horizontalHeader().setStretchLastSection(False)
 
     # =========================================================
-    # THEME CONTROL
+    # THEMES
     # =========================================================
-    def toggle_theme(self):
-        if self.current_theme == "dark":
-            self.current_theme = "light"
-        else:
-            self.current_theme = "dark"
-
-        self.apply_theme(self.current_theme)
-
     def apply_theme(self, theme):
+        self.current_theme = theme
         if theme == "dark":
             self.setStyleSheet(self.dark_stylesheet())
-            self.theme_btn_1.setText("Switch to Light Mode")
-            self.theme_btn_2.setText("Switch to Light Mode")
         else:
             self.setStyleSheet(self.light_stylesheet())
-            self.theme_btn_1.setText("Switch to Dark Mode")
-            self.theme_btn_2.setText("Switch to Dark Mode")
 
     def dark_stylesheet(self):
         return """
@@ -306,8 +309,8 @@ class LeaseMonitoringWindow(QMainWindow):
                 stop:0 #1d4ed8,
                 stop:1 #0f766e
             );
+            border: none;
             border-radius: 16px;
-            border: 1px solid rgba(255, 255, 255, 0.08);
         }
 
         QLabel#companyLabel {
@@ -315,23 +318,27 @@ class LeaseMonitoringWindow(QMainWindow):
             font-weight: 700;
             color: #dbeafe;
             letter-spacing: 1px;
+            background: transparent;
         }
 
         QLabel#pageTitle {
             font-size: 24px;
             font-weight: 800;
             color: white;
+            background: transparent;
         }
 
         QLabel#subText {
             font-size: 13px;
             color: #e2e8f0;
+            background: transparent;
         }
 
         QLabel#sectionLabel {
             font-size: 14px;
             font-weight: 700;
             color: #93c5fd;
+            background: transparent;
         }
 
         QPushButton {
@@ -351,9 +358,42 @@ class LeaseMonitoringWindow(QMainWindow):
             background-color: #1d4ed8;
         }
 
+        QToolButton#settingsButton {
+            background-color: #1e293b;
+            color: #f8fafc;
+            border: none;
+            border-radius: 18px;
+            font-size: 18px;
+            font-weight: 700;
+            min-width: 38px;
+            min-height: 38px;
+            padding: 4px;
+        }
+
+        QToolButton#settingsButton:hover {
+            background-color: #334155;
+        }
+
+        QMenu {
+            background-color: #111827;
+            color: #f8fafc;
+            border: none;
+            border-radius: 10px;
+            padding: 8px;
+        }
+
+        QMenu::item {
+            padding: 8px 22px 8px 12px;
+            border-radius: 6px;
+        }
+
+        QMenu::item:selected {
+            background-color: #1d4ed8;
+        }
+
         QGroupBox {
             font-weight: 700;
-            border: 1px solid #334155;
+            border: none;
             border-radius: 14px;
             margin-top: 12px;
             padding-top: 12px;
@@ -384,18 +424,19 @@ class LeaseMonitoringWindow(QMainWindow):
         QLabel#legendText {
             color: #e5e7eb;
             padding-left: 4px;
+            background: transparent;
         }
 
         QTableWidget {
             background-color: #111827;
             alternate-background-color: #172033;
-            border: 1px solid #334155;
+            border: none;
             border-radius: 14px;
-            gridline-color: #334155;
             color: #f8fafc;
             selection-background-color: #1d4ed8;
             selection-color: white;
             padding: 8px;
+            outline: 0;
         }
 
         QHeaderView::section {
@@ -403,37 +444,52 @@ class LeaseMonitoringWindow(QMainWindow):
             color: #93c5fd;
             padding: 10px;
             border: none;
-            border-bottom: 1px solid #334155;
             font-weight: 800;
         }
 
         QTableWidget::item {
             padding: 8px;
-            border-bottom: 1px solid #1f2937;
+            border: none;
         }
 
         QScrollBar:vertical {
-            background: #0f172a;
-            width: 12px;
-            margin: 0px;
+            background: transparent;
+            width: 10px;
+            margin: 4px;
+            border: none;
         }
 
         QScrollBar::handle:vertical {
             background: #334155;
-            border-radius: 6px;
+            border-radius: 5px;
             min-height: 20px;
         }
 
+        QScrollBar::add-line:vertical,
+        QScrollBar::sub-line:vertical {
+            border: none;
+            background: none;
+            height: 0px;
+        }
+
         QScrollBar:horizontal {
-            background: #0f172a;
-            height: 12px;
-            margin: 0px;
+            background: transparent;
+            height: 10px;
+            margin: 4px;
+            border: none;
         }
 
         QScrollBar::handle:horizontal {
             background: #334155;
-            border-radius: 6px;
+            border-radius: 5px;
             min-width: 20px;
+        }
+
+        QScrollBar::add-line:horizontal,
+        QScrollBar::sub-line:horizontal {
+            border: none;
+            background: none;
+            width: 0px;
         }
         """
 
@@ -452,8 +508,8 @@ class LeaseMonitoringWindow(QMainWindow):
                 stop:0 #60a5fa,
                 stop:1 #2dd4bf
             );
+            border: none;
             border-radius: 16px;
-            border: 1px solid #cbd5e1;
         }
 
         QLabel#companyLabel {
@@ -461,23 +517,27 @@ class LeaseMonitoringWindow(QMainWindow):
             font-weight: 700;
             color: #1e3a8a;
             letter-spacing: 1px;
+            background: transparent;
         }
 
         QLabel#pageTitle {
             font-size: 24px;
             font-weight: 800;
             color: #082f49;
+            background: transparent;
         }
 
         QLabel#subText {
             font-size: 13px;
             color: #334155;
+            background: transparent;
         }
 
         QLabel#sectionLabel {
             font-size: 14px;
             font-weight: 700;
             color: #1d4ed8;
+            background: transparent;
         }
 
         QPushButton {
@@ -497,9 +557,42 @@ class LeaseMonitoringWindow(QMainWindow):
             background-color: #1d4ed8;
         }
 
+        QToolButton#settingsButton {
+            background-color: #e2e8f0;
+            color: #0f172a;
+            border: none;
+            border-radius: 18px;
+            font-size: 18px;
+            font-weight: 700;
+            min-width: 38px;
+            min-height: 38px;
+            padding: 4px;
+        }
+
+        QToolButton#settingsButton:hover {
+            background-color: #cbd5e1;
+        }
+
+        QMenu {
+            background-color: white;
+            color: #0f172a;
+            border: none;
+            border-radius: 10px;
+            padding: 8px;
+        }
+
+        QMenu::item {
+            padding: 8px 22px 8px 12px;
+            border-radius: 6px;
+        }
+
+        QMenu::item:selected {
+            background-color: #dbeafe;
+        }
+
         QGroupBox {
             font-weight: 700;
-            border: 1px solid #cbd5e1;
+            border: none;
             border-radius: 14px;
             margin-top: 12px;
             padding-top: 12px;
@@ -525,18 +618,19 @@ class LeaseMonitoringWindow(QMainWindow):
         QLabel#legendText {
             color: #334155;
             padding-left: 4px;
+            background: transparent;
         }
 
         QTableWidget {
             background-color: white;
             alternate-background-color: #f1f5f9;
-            border: 1px solid #cbd5e1;
+            border: none;
             border-radius: 14px;
-            gridline-color: #e2e8f0;
             color: #0f172a;
             selection-background-color: #bfdbfe;
             selection-color: #0f172a;
             padding: 8px;
+            outline: 0;
         }
 
         QHeaderView::section {
@@ -544,37 +638,52 @@ class LeaseMonitoringWindow(QMainWindow):
             color: #1e3a8a;
             padding: 10px;
             border: none;
-            border-bottom: 1px solid #cbd5e1;
             font-weight: 800;
         }
 
         QTableWidget::item {
             padding: 8px;
-            border-bottom: 1px solid #e5e7eb;
+            border: none;
         }
 
         QScrollBar:vertical {
-            background: #e2e8f0;
-            width: 12px;
-            margin: 0px;
+            background: transparent;
+            width: 10px;
+            margin: 4px;
+            border: none;
         }
 
         QScrollBar::handle:vertical {
             background: #94a3b8;
-            border-radius: 6px;
+            border-radius: 5px;
             min-height: 20px;
         }
 
+        QScrollBar::add-line:vertical,
+        QScrollBar::sub-line:vertical {
+            border: none;
+            background: none;
+            height: 0px;
+        }
+
         QScrollBar:horizontal {
-            background: #e2e8f0;
-            height: 12px;
-            margin: 0px;
+            background: transparent;
+            height: 10px;
+            margin: 4px;
+            border: none;
         }
 
         QScrollBar::handle:horizontal {
             background: #94a3b8;
-            border-radius: 6px;
+            border-radius: 5px;
             min-width: 20px;
+        }
+
+        QScrollBar::add-line:horizontal,
+        QScrollBar::sub-line:horizontal {
+            border: none;
+            background: none;
+            width: 0px;
         }
         """
 
