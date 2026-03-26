@@ -49,8 +49,8 @@
    <widget class="QTabWidget" name="tabWidget">
     <property name="geometry">
      <rect>
-      <x>10</x>
-      <y>149</y>
+      <x>20</x>
+      <y>160</y>
       <width>1791</width>
       <height>891</height>
      </rect>
@@ -80,7 +80,7 @@
        <rect>
         <x>280</x>
         <y>20</y>
-        <width>150</width>
+        <width>191</width>
         <height>30</height>
        </rect>
       </property>
@@ -99,11 +99,26 @@
         <string>Expiry Date</string>
        </property>
       </item>
+      <item>
+       <property name="text">
+        <string>Within 90 days expiry</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Within 60 days expiry</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Within 30 days expiry</string>
+       </property>
+      </item>
      </widget>
      <widget class="QComboBox" name="areaFilter">
       <property name="geometry">
        <rect>
-        <x>440</x>
+        <x>480</x>
         <y>20</y>
         <width>150</width>
         <height>30</height>
@@ -121,7 +136,7 @@
       </item>
       <item>
        <property name="text">
-        <string>Processing</string>
+        <string>Processing at head office</string>
        </property>
       </item>
       <item>
@@ -260,7 +275,7 @@
      <widget class="QPushButton" name="pushButton">
       <property name="geometry">
        <rect>
-        <x>1460</x>
+        <x>640</x>
         <y>20</y>
         <width>93</width>
         <height>28</height>
@@ -273,7 +288,7 @@
      <widget class="QPushButton" name="pushButton_2">
       <property name="geometry">
        <rect>
-        <x>1560</x>
+        <x>1660</x>
         <y>20</y>
         <width>93</width>
         <height>28</height>
@@ -286,7 +301,7 @@
      <widget class="QPushButton" name="pushButton_3">
       <property name="geometry">
        <rect>
-        <x>1660</x>
+        <x>1560</x>
         <y>20</y>
         <width>93</width>
         <height>28</height>
@@ -312,12 +327,12 @@
       </property>
       <column>
        <property name="text">
-        <string>DATE RECEIVED</string>
+        <string>TITLE</string>
        </property>
       </column>
       <column>
        <property name="text">
-        <string>TITLE</string>
+        <string>DATE RECEIVED</string>
        </property>
       </column>
       <column>
