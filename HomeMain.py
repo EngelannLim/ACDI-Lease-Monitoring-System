@@ -1,39 +1,208 @@
+import csv
 import sys
-from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QAction
+from copy import deepcopy
+
+from PyQt6.QtCore import Qt, QSignalBlocker
+from PyQt6.QtGui import QAction, QColor, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFrame,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QGroupBox,
-    QGridLayout,
-    QStackedWidget,
-    QHeaderView,
-    QAbstractItemView,
-    QSizePolicy,
-    QFrame,
     QToolButton,
-    QMenu,
+    QVBoxLayout,
+    QWidget,
 )
 
 from shared_data import store
 
 
+class SheetTableWidget(QTableWidget):
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            selected_items = self.selectedItems()
+            if selected_items:
+                parent_window = self.window()
+                if hasattr(parent_window, "handle_delete_selected_cells"):
+                    parent_window.handle_delete_selected_cells()
+                    event.accept()
+                    return
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+
+class BranchDetailsDialog(QDialog):
+    def __init__(self, headers, values=None, title="Add Branch", parent=None, read_only=False):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(760, 620)
+        self.inputs = []
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setSpacing(10)
+        form.setContentsMargins(8, 8, 8, 8)
+
+        values = values or [""] * len(headers)
+        for index, header in enumerate(headers):
+            clean_header = header.replace("\n", " ")
+            if clean_header == "REMARKS":
+                widget = QPlainTextEdit()
+                widget.setPlainText(values[index] if index < len(values) else "")
+                widget.setFixedHeight(90)
+            else:
+                widget = QLineEdit(values[index] if index < len(values) else "")
+
+            widget.setReadOnly(read_only)
+            widget.setObjectName("modalField")
+            label = QLabel(clean_header)
+            label.setObjectName("modalLabel")
+            form.addRow(label, widget)
+            self.inputs.append(widget)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(self)
+        if read_only:
+            self.delete_button = buttons.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
+            self.cancel_button = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
+            self.delete_button.clicked.connect(self.accept)
+            self.cancel_button.clicked.connect(self.reject)
+        else:
+            self.save_button = buttons.addButton("Add Branch", QDialogButtonBox.ButtonRole.AcceptRole)
+            self.cancel_button = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
+            self.save_button.clicked.connect(self.accept)
+            self.cancel_button.clicked.connect(self.reject)
+
+        layout.addWidget(buttons)
+
+    def values(self):
+        data = []
+        for widget in self.inputs:
+            if isinstance(widget, QPlainTextEdit):
+                data.append(widget.toPlainText().strip())
+            else:
+                data.append(widget.text().strip())
+        return data
+
+
+class NotificationsDialog(QDialog):
+    def __init__(self, total_contracts, notices, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Notifications")
+        self.resize(760, 520)
+
+        layout = QVBoxLayout(self)
+
+        summary = QLabel(
+            f"Contracts: {total_contracts}    Needs Action: {len(notices)}"
+        )
+        summary.setObjectName("sectionLabel")
+        layout.addWidget(summary)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(10)
+
+        if notices:
+            for notice in notices:
+                card = QFrame()
+                card.setObjectName("notificationCard")
+                card_layout = QVBoxLayout(card)
+                card_layout.setContentsMargins(14, 12, 14, 12)
+                card_layout.setSpacing(4)
+
+                branch = QLabel(notice["branch"])
+                branch.setObjectName("sectionLabel")
+
+                details = QLabel(
+                    f"Officer: {notice['officer']}\n"
+                    f"Contact: {notice['contact']}\n"
+                    f"Reminder Date: {notice.get('reminder_date', '')}\n"
+                    f"Contract End: {notice['end_date']}\n"
+                    f"Action: {notice.get('action', 'Renew / Escalation or Increase')}"
+                )
+                details.setObjectName("subText")
+                details.setWordWrap(True)
+
+                card_layout.addWidget(branch)
+                card_layout.addWidget(details)
+                container_layout.addWidget(card)
+        else:
+            empty_label = QLabel("No contracts are currently inside the 2-month action window.")
+            empty_label.setObjectName("subText")
+            empty_label.setWordWrap(True)
+            container_layout.addWidget(empty_label)
+
+        container_layout.addStretch()
+        scroll_area.setWidget(container)
+        layout.addWidget(scroll_area)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+
 class LeaseMonitoringWindow(QMainWindow):
+    EXPIRY_HEADERS = [
+        "BRANCH",
+        "DATE RECEIVED",
+        "DATE SENT\nTO HO",
+        "TERM",
+        "HEAD",
+        "HEAD CONTACT NO.",
+        "REMINDER\n(2 mos before deadline)",
+        "FROM",
+        "TO",
+        "FLOOR AREA",
+        "MEMO #",
+        "DATE COMPLETED\n/SENT",
+        "REMARKS",
+    ]
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ACDI Lease Monitoring System")
         self.resize(1800, 900)
 
-        self.current_theme = "dark"
+        self.current_theme = store.get_theme()
+        self.expiry_table_updating = False
+        self.expiry_dirty = False
+        self.expiry_undo_stack = []
+        self.expiry_redo_stack = []
+        self.expiry_last_snapshot = []
+        self.legend_labels = []
+        self.notification_cards = []
 
         self.stacked = QStackedWidget()
+        self.create_shortcuts()
         self.main_page = self.build_main_dashboard_page()
         self.expiry_page = self.build_contract_expiry_page()
 
@@ -42,10 +211,39 @@ class LeaseMonitoringWindow(QMainWindow):
 
         self.setCentralWidget(self.stacked)
         self.apply_theme(self.current_theme)
+        self.refresh_main_dashboard_table()
 
-    # =========================================================
-    # COMMON TOP BAR
-    # =========================================================
+    def create_shortcuts(self):
+        self.copy_action = QAction("Copy", self)
+        self.copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        self.copy_action.triggered.connect(self.copy_selected_cells)
+        self.addAction(self.copy_action)
+
+        self.cut_action = QAction("Cut", self)
+        self.cut_action.setShortcut(QKeySequence.StandardKey.Cut)
+        self.cut_action.triggered.connect(self.cut_selected_cells)
+        self.addAction(self.cut_action)
+
+        self.paste_action = QAction("Paste", self)
+        self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self.paste_action.triggered.connect(self.paste_cells)
+        self.addAction(self.paste_action)
+
+        self.save_action = QAction("Save", self)
+        self.save_action.setShortcut(QKeySequence.StandardKey.Save)
+        self.save_action.triggered.connect(self.save_expiry_sheet)
+        self.addAction(self.save_action)
+
+        self.undo_action = QAction("Undo", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self.undo_expiry_change)
+        self.addAction(self.undo_action)
+
+        self.redo_action = QAction("Redo", self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self.redo_expiry_change)
+        self.addAction(self.redo_action)
+
     def create_top_bar(self, left_button_text, left_button_handler):
         top_bar = QHBoxLayout()
         top_bar.setSpacing(10)
@@ -55,7 +253,7 @@ class LeaseMonitoringWindow(QMainWindow):
         nav_btn.clicked.connect(left_button_handler)
 
         settings_btn = QToolButton()
-        settings_btn.setText("⚙")
+        settings_btn.setText("Settings")
         settings_btn.setObjectName("settingsButton")
         settings_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
 
@@ -83,9 +281,6 @@ class LeaseMonitoringWindow(QMainWindow):
 
         return top_bar
 
-    # =========================================================
-    # MAIN PAGE
-    # =========================================================
     def build_main_dashboard_page(self):
         page = QWidget()
         root = QVBoxLayout(page)
@@ -143,6 +338,7 @@ class LeaseMonitoringWindow(QMainWindow):
             rows=store.get_main_dashboard_rows(),
             row_height=32,
             fixed_resize=False,
+            editable=False,
         )
 
         root.addWidget(self.main_table)
@@ -169,9 +365,23 @@ class LeaseMonitoringWindow(QMainWindow):
         root.addWidget(footer_box)
         return page
 
-    # =========================================================
-    # EXPIRY PAGE
-    # =========================================================
+    def refresh_main_dashboard_table(self):
+        rows = store.get_main_dashboard_rows()
+        blocker = QSignalBlocker(self.main_table)
+        self.main_table.setRowCount(len(rows))
+
+        for row_index, row_data in enumerate(rows):
+            self.main_table.setRowHeight(row_index, 32)
+            for col_index, value in enumerate(row_data):
+                item = self.main_table.item(row_index, col_index)
+                if item is None:
+                    item = QTableWidgetItem()
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                    self.main_table.setItem(row_index, col_index, item)
+                item.setText(str(value))
+        del blocker
+        self.auto_size_main_dashboard_columns()
+
     def build_contract_expiry_page(self):
         page = QWidget()
         root = QVBoxLayout(page)
@@ -186,7 +396,8 @@ class LeaseMonitoringWindow(QMainWindow):
         title_card = QFrame()
         title_card.setObjectName("headerCard")
         title_layout = QVBoxLayout(title_card)
-        title_layout.setContentsMargins(20, 18, 20, 18)
+        title_layout.setContentsMargins(20, 14, 20, 14)
+        title_layout.setSpacing(4)
 
         title = QLabel("CONTRACT EXPIRY")
         title.setObjectName("pageTitle")
@@ -203,6 +414,10 @@ class LeaseMonitoringWindow(QMainWindow):
         legend_group = QGroupBox("LEGEND")
         legend_group.setObjectName("legendBox")
         legend_layout = QGridLayout(legend_group)
+        legend_layout.setContentsMargins(12, 8, 12, 10)
+        legend_layout.setHorizontalSpacing(10)
+        legend_layout.setVerticalSpacing(6)
+        self.legend_labels = []
 
         for row_index, (count, text) in enumerate(store.get_legend_rows()):
             count_label = QLabel(str(count))
@@ -213,64 +428,152 @@ class LeaseMonitoringWindow(QMainWindow):
 
             legend_layout.addWidget(count_label, row_index, 0)
             legend_layout.addWidget(text_label, row_index, 1)
+            self.legend_labels.append((count_label, text_label))
 
         info_row.addWidget(title_card, 3)
         info_row.addWidget(legend_group, 2)
-
+        info_row.setStretch(0, 4)
+        info_row.setStretch(1, 2)
         root.addLayout(info_row)
 
-        self.expiry_table = QTableWidget()
-        expiry_headers = [
-            "BRANCH",
-            "DATE RECEIVED",
-            "DATE SENT\nTO HO",
-            "TERM",
-            "HEAD",
-            "HEAD CONTACT NO.",
-            "REMINDER\n(2 mos before deadline)",
-            "FROM",
-            "TO",
-            "FLOOR AREA",
-            "MEMO #",
-            "DATE COMPLETED\n/SENT",
-            "REMARKS",
-        ]
-        expiry_widths = [180, 90, 95, 140, 150, 120, 100, 75, 75, 80, 180, 105, 300]
+        action_bar = QFrame()
+        action_bar.setObjectName("actionBar")
+        action_layout = QHBoxLayout(action_bar)
+        action_layout.setContentsMargins(14, 12, 14, 12)
+        action_layout.setSpacing(12)
+
+        self.add_row_btn = QPushButton("Add Branch")
+        self.add_row_btn.clicked.connect(self.add_expiry_row)
+
+        self.remove_row_btn = QPushButton("Delete Branch")
+        self.remove_row_btn.clicked.connect(self.remove_selected_expiry_row)
+
+        self.refresh_btn = QPushButton("Refresh Reminders")
+        self.refresh_btn.clicked.connect(self.refresh_expiry_views)
+
+        self.notifications_btn = QPushButton("Notifications")
+        self.notifications_btn.clicked.connect(self.show_notifications_dialog)
+        self.notifications_btn.setMinimumWidth(170)
+
+        self.save_btn = QPushButton("Save")
+        self.save_btn.clicked.connect(self.save_expiry_sheet)
+
+        self.import_btn = QPushButton("Import CSV")
+        self.import_btn.clicked.connect(self.import_csv_data)
+
+        self.undo_btn = QPushButton("↶")
+        self.undo_btn.setToolTip("Undo")
+        self.undo_btn.clicked.connect(self.undo_expiry_change)
+
+        self.redo_btn = QPushButton("↷")
+        self.redo_btn.setToolTip("Redo")
+        self.redo_btn.clicked.connect(self.redo_expiry_change)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search branch name")
+        self.search_input.setObjectName("ribbonInput")
+        self.search_input.setMinimumWidth(180)
+        self.search_input.textChanged.connect(self.apply_search_filter)
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.setObjectName("ribbonInput")
+        self.sort_combo.setMinimumWidth(170)
+        self.sort_combo.addItems(["Sort by Urgency", "Sort by Branch A-Z", "Sort by Branch Z-A"])
+        self.sort_combo.currentIndexChanged.connect(self.sort_expiry_rows)
+
+        self.undo_btn.setText("Undo")
+        self.redo_btn.setText("Redo")
+
+        file_group = self.build_ribbon_group("File", [self.save_btn, self.import_btn])
+        edit_group = self.build_ribbon_group("Edit", [self.undo_btn, self.redo_btn])
+        rows_group = self.build_ribbon_group("Rows", [self.add_row_btn, self.remove_row_btn])
+        search_group = self.build_ribbon_group("Search Contract", [self.search_input, self.sort_combo])
+
+        action_layout.addWidget(file_group)
+        action_layout.addWidget(self.build_ribbon_divider())
+        action_layout.addWidget(edit_group)
+        action_layout.addWidget(self.build_ribbon_divider())
+        action_layout.addWidget(rows_group)
+        action_layout.addWidget(self.build_ribbon_divider())
+        action_layout.addWidget(search_group)
+        action_layout.addStretch()
+        action_layout.addWidget(self.notifications_btn)
+
+        root.addWidget(action_bar)
+
+        self.expiry_table = SheetTableWidget()
+        expiry_widths = [180, 100, 100, 140, 170, 145, 140, 95, 95, 90, 180, 120, 330]
 
         self.configure_table(
             table=self.expiry_table,
-            headers=expiry_headers,
+            headers=self.EXPIRY_HEADERS,
             widths=expiry_widths,
-            rows=store.get_expiry_rows(),
-            row_height=32,
+            rows=[],
+            row_height=34,
             fixed_resize=True,
+            editable=True,
         )
 
+        self.expiry_table.itemChanged.connect(self.handle_expiry_item_changed)
         root.addWidget(self.expiry_table)
+
+        self.populate_expiry_table()
+        self.refresh_expiry_views()
         return page
 
-    # =========================================================
-    # TABLE SETUP
-    # =========================================================
-    def configure_table(self, table, headers, widths, rows, row_height=32, fixed_resize=False):
+    def build_ribbon_group(self, title, buttons):
+        group = QFrame()
+        group.setObjectName("ribbonGroup")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("ribbonTitle")
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+        for button in buttons:
+            button_row.addWidget(button)
+
+        layout.addWidget(title_label)
+        layout.addLayout(button_row)
+        return group
+
+    def build_ribbon_divider(self):
+        divider = QFrame()
+        divider.setObjectName("ribbonDivider")
+        divider.setFixedWidth(1)
+        return divider
+
+    def configure_table(self, table, headers, widths, rows, row_height=32, fixed_resize=False, editable=False):
         table.setColumnCount(len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setRowCount(len(rows))
 
         table.verticalHeader().setVisible(False)
         table.setWordWrap(True)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.setAlternatingRowColors(True)
-        table.setShowGrid(False)
+        table.setShowGrid(True)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        table.setFrameShape(QTableWidget.Shape.NoFrame)
+        table.setFrameShape(QTableWidget.Shape.StyledPanel)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setGridStyle(Qt.PenStyle.SolidLine)
+        table.setCornerButtonEnabled(False)
 
-        if fixed_resize:
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        if editable:
+            table.setEditTriggers(
+                QAbstractItemView.EditTrigger.DoubleClicked
+                | QAbstractItemView.EditTrigger.EditKeyPressed
+                | QAbstractItemView.EditTrigger.AnyKeyPressed
+            )
+            table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         else:
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+
+        resize_mode = QHeaderView.ResizeMode.Fixed if fixed_resize else QHeaderView.ResizeMode.Interactive
+        table.horizontalHeader().setSectionResizeMode(resize_mode)
 
         for index, width in enumerate(widths):
             table.setColumnWidth(index, width)
@@ -284,20 +587,551 @@ class LeaseMonitoringWindow(QMainWindow):
 
         table.horizontalHeader().setStretchLastSection(False)
 
-    # =========================================================
-    # THEMES
-    # =========================================================
+    def populate_expiry_table(self):
+        rows = store.get_expiry_rows()
+        self.restore_expiry_rows_to_table(rows)
+        self.expiry_undo_stack.clear()
+        self.expiry_redo_stack.clear()
+        self.expiry_dirty = False
+        self.update_window_title()
+        self.auto_size_main_dashboard_columns()
+
+    def auto_size_main_dashboard_columns(self):
+        self.main_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.main_table.resizeColumnsToContents()
+
+        max_widths = {
+            0: 170,
+            1: 720,
+            2: 120,
+            3: 180,
+            4: 150,
+            5: 150,
+            6: 170,
+            7: 120,
+            8: 120,
+            9: 180,
+            10: 170,
+            11: 190,
+            12: 520,
+        }
+        min_widths = {
+            0: 130,
+            1: 420,
+            2: 80,
+            3: 105,
+            4: 100,
+            5: 100,
+            6: 120,
+            7: 80,
+            8: 80,
+            9: 130,
+            10: 120,
+            11: 140,
+            12: 320,
+        }
+
+        for column in range(self.main_table.columnCount()):
+            current = self.main_table.columnWidth(column)
+            current = max(current, min_widths.get(column, 80))
+            current = min(current, max_widths.get(column, 520))
+            self.main_table.setColumnWidth(column, current)
+
+        self.main_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+    def collect_expiry_rows_from_table(self):
+        rows = []
+        for row_index in range(self.expiry_table.rowCount()):
+            row_data = []
+            for col_index in range(self.expiry_table.columnCount()):
+                item = self.expiry_table.item(row_index, col_index)
+                row_data.append(item.text().strip() if item else "")
+            row_data[6] = store.reminder_date_for(row_data)
+            rows.append(row_data)
+        return rows
+
+    def update_expiry_snapshot(self):
+        if hasattr(self, "expiry_table"):
+            self.expiry_last_snapshot = deepcopy(self.collect_expiry_rows_from_table())
+
+    def sync_dirty_state(self):
+        self.expiry_dirty = self.collect_expiry_rows_from_table() != store.get_expiry_rows()
+        self.update_window_title()
+
+    def record_expiry_change(self, previous_rows):
+        current_rows = self.collect_expiry_rows_from_table()
+        if current_rows == previous_rows:
+            return
+        self.expiry_undo_stack.append(deepcopy(previous_rows))
+        if len(self.expiry_undo_stack) > 100:
+            self.expiry_undo_stack.pop(0)
+        self.expiry_redo_stack.clear()
+        self.expiry_last_snapshot = deepcopy(current_rows)
+        self.sync_dirty_state()
+        self.refresh_expiry_views()
+
+    def restore_expiry_rows_to_table(self, rows):
+        blocker = QSignalBlocker(self.expiry_table)
+        self.expiry_table_updating = True
+        self.expiry_table.setRowCount(len(rows))
+
+        for row_index, row_data in enumerate(rows):
+            self.expiry_table.setRowHeight(row_index, 36)
+            normalized = list(row_data[:13])
+            if len(normalized) < 13:
+                normalized.extend([""] * (13 - len(normalized)))
+            normalized[6] = store.reminder_date_for(normalized)
+
+            for col_index, value in enumerate(normalized):
+                item = self.expiry_table.item(row_index, col_index)
+                if item is None:
+                    item = QTableWidgetItem()
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                    self.expiry_table.setItem(row_index, col_index, item)
+                item.setText(str(value))
+
+        del blocker
+        self.expiry_table_updating = False
+        self.expiry_last_snapshot = deepcopy(self.collect_expiry_rows_from_table())
+        self.apply_expiry_row_styles(self.expiry_last_snapshot)
+        self.apply_search_filter()
+
+    def undo_expiry_change(self):
+        if not self.expiry_undo_stack:
+            return
+        current_rows = self.collect_expiry_rows_from_table()
+        previous_rows = self.expiry_undo_stack.pop()
+        self.expiry_redo_stack.append(deepcopy(current_rows))
+        self.restore_expiry_rows_to_table(previous_rows)
+        self.sync_dirty_state()
+
+    def redo_expiry_change(self):
+        if not self.expiry_redo_stack:
+            return
+        current_rows = self.collect_expiry_rows_from_table()
+        next_rows = self.expiry_redo_stack.pop()
+        self.expiry_undo_stack.append(deepcopy(current_rows))
+        self.restore_expiry_rows_to_table(next_rows)
+        self.sync_dirty_state()
+
+    def handle_expiry_item_changed(self, _item):
+        if self.expiry_table_updating:
+            return
+        previous_rows = deepcopy(self.expiry_last_snapshot)
+        self.record_expiry_change(previous_rows)
+
+    def mark_expiry_dirty(self):
+        self.expiry_dirty = True
+        self.update_window_title()
+
+    def update_window_title(self):
+        suffix = " *" if self.expiry_dirty else ""
+        backend_suffix = " [Local SQL]" if getattr(store, "backend", "mysql") != "mysql" else ""
+        self.setWindowTitle(f"ACDI Lease Monitoring System{backend_suffix}{suffix}")
+
+    def save_expiry_sheet(self):
+        if not hasattr(self, "expiry_table"):
+            return
+        rows = self.collect_expiry_rows_from_table()
+        store.set_expiry_rows(rows)
+        self.expiry_dirty = False
+        self.expiry_undo_stack.clear()
+        self.expiry_redo_stack.clear()
+        self.refresh_main_dashboard_table()
+        self.populate_expiry_table()
+        self.refresh_expiry_views()
+        self.update_window_title()
+
+    def revert_expiry_sheet(self):
+        if not hasattr(self, "expiry_table"):
+            return
+        if self.expiry_dirty and not self.confirm_revert_action():
+            return
+        store.load()
+        self.refresh_main_dashboard_table()
+        self.populate_expiry_table()
+        self.refresh_expiry_views()
+        self.update_window_title()
+
+    def refresh_expiry_views(self):
+        current_rows = self.collect_expiry_rows_from_table() if hasattr(self, "expiry_table") else store.get_expiry_rows()
+        self.update_legend(current_rows)
+        self.update_notifications(current_rows)
+        self.apply_expiry_row_styles(current_rows)
+
+    def summarize_legend_rows(self, rows):
+        counts = {
+            "Done Lease Contracts": 0,
+            "For Reminder / Action": 0,
+            "Active Contracts": 0,
+            "Expired Contracts": 0,
+        }
+
+        for row in rows:
+            status = store.contract_status_for(row)
+            if status == "done":
+                counts["Done Lease Contracts"] += 1
+            elif status == "due":
+                counts["For Reminder / Action"] += 1
+            elif status == "expired":
+                counts["Expired Contracts"] += 1
+            elif status == "active":
+                counts["Active Contracts"] += 1
+
+        return [
+            (str(counts["Done Lease Contracts"]), "Done Lease Contracts"),
+            (str(counts["For Reminder / Action"]), "For Reminder / Action"),
+            (str(counts["Active Contracts"]), "Active Contracts"),
+            (str(counts["Expired Contracts"]), "Expired Contracts"),
+        ]
+
+    def update_legend(self, rows):
+        legend_rows = self.summarize_legend_rows(rows)
+        for index, (count, text) in enumerate(legend_rows):
+            count_label, text_label = self.legend_labels[index]
+            count_label.setText(str(count))
+            text_label.setText(text)
+
+    def build_notification_rows(self, rows):
+        notices = []
+        from datetime import date
+
+        today = date.today()
+        for row in rows:
+            branch = row[0].strip()
+            end_date = store.parse_date(row[8])
+            reminder_date = store.parse_date(store.reminder_date_for(row))
+            if not branch or not end_date or not reminder_date:
+                continue
+            if reminder_date <= today <= end_date:
+                notices.append(
+                    {
+                        "branch": branch,
+                        "officer": row[4].strip() or "Officer not assigned",
+                        "contact": row[5].strip() or "No contact number",
+                        "reminder_date": store.format_date(reminder_date),
+                        "end_date": store.format_date(end_date),
+                        "action": "Renew / Escalation or Increase",
+                    }
+                )
+        notices.sort(key=lambda item: store.parse_date(item["end_date"]))
+        return notices
+
+    def update_notifications(self, rows):
+        notice_count = len(self.build_notification_rows(rows))
+        self.notifications_btn.setText(f"Notifications ({notice_count})")
+
+    def show_notifications_dialog(self):
+        rows = self.collect_expiry_rows_from_table() if hasattr(self, "expiry_table") else store.get_expiry_rows()
+        notices = self.build_notification_rows(rows)
+        total_contracts = len([row for row in rows if row[0].strip()])
+        dialog = NotificationsDialog(total_contracts, notices, self)
+        dialog.exec()
+
+    def apply_expiry_row_styles(self, rows):
+        for row_index, row_data in enumerate(rows):
+            status = store.contract_status_for(row_data)
+
+            if status == "done":
+                background = QColor("#ecfdf3") if self.current_theme == "light" else QColor("#163528")
+            elif status == "due":
+                background = QColor("#fff7d6") if self.current_theme == "light" else QColor("#463315")
+            elif status == "expired":
+                background = QColor("#ffebeb") if self.current_theme == "light" else QColor("#402020")
+            else:
+                background = QColor("#ffffff") if self.current_theme == "light" else QColor("#0f172a")
+
+            for col_index in range(self.expiry_table.columnCount()):
+                item = self.expiry_table.item(row_index, col_index)
+                if item:
+                    item.setBackground(background)
+
+    def add_expiry_row(self):
+        default_row = ["", "", "", "1 YR", "", "", "", "", "", "", "", "", "FOR RENEW / ESCALATION"]
+        dialog = BranchDetailsDialog(self.EXPIRY_HEADERS, default_row, "Add Branch", self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        row_values = dialog.values()
+        previous_rows = self.collect_expiry_rows_from_table()
+        self.expiry_table_updating = True
+        self.expiry_table.insertRow(self.expiry_table.rowCount())
+        new_row = self.expiry_table.rowCount() - 1
+        self.expiry_table.setRowHeight(new_row, 36)
+        for col_index, value in enumerate(row_values):
+            item = QTableWidgetItem(str(value))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.expiry_table.setItem(new_row, col_index, item)
+        self.expiry_table_updating = False
+        self.record_expiry_change(previous_rows)
+        self.expiry_table.setCurrentCell(new_row, 0)
+        self.expiry_table.scrollToBottom()
+
+    def remove_selected_expiry_row(self):
+        selected_rows = sorted({index.row() for index in self.expiry_table.selectedIndexes()}, reverse=True)
+        if not selected_rows:
+            QMessageBox.information(self, "Delete Branch", "Select at least one branch row to delete.")
+            return
+
+        if len(selected_rows) > 1:
+            QMessageBox.information(self, "Delete Branch", "Please select one branch row at a time.")
+            return
+
+        row_index = selected_rows[0]
+        row_values = []
+        for col_index in range(self.expiry_table.columnCount()):
+            item = self.expiry_table.item(row_index, col_index)
+            row_values.append(item.text() if item else "")
+
+        dialog = BranchDetailsDialog(
+            self.EXPIRY_HEADERS,
+            row_values,
+            "Delete Branch",
+            self,
+            read_only=True,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        previous_rows = self.collect_expiry_rows_from_table()
+        self.expiry_table_updating = True
+        self.expiry_table.removeRow(row_index)
+        self.expiry_table_updating = False
+        self.record_expiry_change(previous_rows)
+
+    def confirm_delete_action(self):
+        result = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            "Do you confirm in deleting info?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return result == QMessageBox.StandardButton.Yes
+
+    def confirm_revert_action(self):
+        result = QMessageBox.question(
+            self,
+            "Revert Changes",
+            "Revert unsaved changes in the sheet?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return result == QMessageBox.StandardButton.Yes
+
+    def prompt_unsaved_changes(self):
+        if not self.expiry_dirty:
+            return "save"
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Unsaved Changes")
+        dialog.setText("This sheet has unsaved changes.")
+        dialog.setInformativeText("Choose Save, Don't Save, or Cancel.")
+        save_button = dialog.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = dialog.addButton("Don't Save", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(save_button)
+        dialog.exec()
+
+        clicked = dialog.clickedButton()
+        if clicked == save_button:
+            self.save_expiry_sheet()
+            return "save"
+        if clicked == discard_button:
+            self.revert_expiry_sheet_silent()
+            return "discard"
+        return "cancel"
+
+    def revert_expiry_sheet_silent(self):
+        store.load()
+        self.refresh_main_dashboard_table()
+        self.populate_expiry_table()
+        self.refresh_expiry_views()
+        self.update_window_title()
+
+    def copy_selected_cells(self):
+        if not hasattr(self, "expiry_table") or self.stacked.currentWidget() != self.expiry_page:
+            return
+        selected_indexes = self.expiry_table.selectedIndexes()
+        if not selected_indexes:
+            return
+
+        rows = sorted({index.row() for index in selected_indexes})
+        cols = sorted({index.column() for index in selected_indexes})
+        lines = []
+        for row in rows:
+            values = []
+            for col in cols:
+                item = self.expiry_table.item(row, col)
+                values.append(item.text() if item else "")
+            lines.append("\t".join(values))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def handle_delete_selected_cells(self):
+        if not hasattr(self, "expiry_table") or self.stacked.currentWidget() != self.expiry_page:
+            return
+        selected_items = self.expiry_table.selectedItems()
+        if not selected_items:
+            return
+        if not self.confirm_delete_action():
+            return
+        previous_rows = self.collect_expiry_rows_from_table()
+        self.expiry_table_updating = True
+        for item in selected_items:
+            item.setText("")
+        self.expiry_table_updating = False
+        self.record_expiry_change(previous_rows)
+
+    def cut_selected_cells(self):
+        if not hasattr(self, "expiry_table") or self.stacked.currentWidget() != self.expiry_page:
+            return
+        selected_items = self.expiry_table.selectedItems()
+        if not selected_items:
+            return
+        self.copy_selected_cells()
+        if not self.confirm_delete_action():
+            return
+        previous_rows = self.collect_expiry_rows_from_table()
+        self.expiry_table_updating = True
+        for item in selected_items:
+            item.setText("")
+        self.expiry_table_updating = False
+        self.record_expiry_change(previous_rows)
+
+    def paste_cells(self):
+        if not hasattr(self, "expiry_table") or self.stacked.currentWidget() != self.expiry_page:
+            return
+        start_row = self.expiry_table.currentRow()
+        start_col = self.expiry_table.currentColumn()
+        if start_row < 0 or start_col < 0:
+            return
+        clipboard_text = QApplication.clipboard().text()
+        if not clipboard_text:
+            return
+
+        previous_rows = self.collect_expiry_rows_from_table()
+        self.expiry_table_updating = True
+        for row_offset, line in enumerate(clipboard_text.splitlines()):
+            values = line.split("\t")
+            target_row = start_row + row_offset
+            while target_row >= self.expiry_table.rowCount():
+                self.expiry_table.insertRow(self.expiry_table.rowCount())
+                self.expiry_table.setRowHeight(self.expiry_table.rowCount() - 1, 36)
+            for col_offset, value in enumerate(values):
+                target_col = start_col + col_offset
+                if target_col >= self.expiry_table.columnCount():
+                    continue
+                item = self.expiry_table.item(target_row, target_col)
+                if item is None:
+                    item = QTableWidgetItem()
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                    self.expiry_table.setItem(target_row, target_col, item)
+                item.setText(value)
+        self.expiry_table_updating = False
+        self.record_expiry_change(previous_rows)
+
+    def import_csv_data(self):
+        if self.stacked.currentWidget() != self.expiry_page:
+            self.show_expiry_page()
+
+        result = QMessageBox.warning(
+            self,
+            "Import CSV",
+            "Importing a CSV file will override the current contract data in the system.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if result != QMessageBox.StandardButton.Ok:
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Contract CSV",
+            "",
+            "CSV Files (*.csv);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8-sig", newline="") as csv_file:
+                reader = list(csv.reader(csv_file))
+        except OSError as exc:
+            QMessageBox.critical(self, "Import CSV", f"Could not open file:\n{exc}")
+            return
+
+        if not reader:
+            QMessageBox.information(self, "Import CSV", "The selected CSV file is empty.")
+            return
+
+        normalized_headers = [header.replace("\n", " ").strip().lower() for header in self.EXPIRY_HEADERS]
+        first_row = [cell.strip().lower() for cell in reader[0]]
+        data_rows = reader[1:] if first_row[: len(normalized_headers)] == normalized_headers else reader
+
+        imported_rows = []
+        for row in data_rows:
+            if not any(str(cell).strip() for cell in row):
+                continue
+            current = [str(value).strip() for value in row[:13]]
+            if len(current) < 13:
+                current.extend([""] * (13 - len(current)))
+            current[6] = store.reminder_date_for(current)
+            imported_rows.append(current)
+
+        store.set_expiry_rows(imported_rows)
+        self.refresh_main_dashboard_table()
+        self.populate_expiry_table()
+        self.refresh_expiry_views()
+        self.search_input.clear()
+        self.sort_combo.setCurrentIndex(0)
+
+    def urgency_rank_for_row(self, row):
+        status = store.contract_status_for(row)
+        order = {"due": 0, "expired": 1, "active": 2, "done": 3, "blank": 4}
+        return order.get(status, 5)
+
+    def sort_expiry_rows(self, *_):
+        if not hasattr(self, "expiry_table"):
+            return
+        current_rows = self.collect_expiry_rows_from_table()
+        previous_rows = deepcopy(current_rows)
+
+        if self.sort_combo.currentIndex() == 0:
+            sorted_rows = sorted(
+                current_rows,
+                key=lambda row: (self.urgency_rank_for_row(row), row[0].strip().lower()),
+            )
+        elif self.sort_combo.currentIndex() == 1:
+            sorted_rows = sorted(current_rows, key=lambda row: row[0].strip().lower())
+        else:
+            sorted_rows = sorted(current_rows, key=lambda row: row[0].strip().lower(), reverse=True)
+
+        self.restore_expiry_rows_to_table(sorted_rows)
+        self.record_expiry_change(previous_rows)
+
+    def apply_search_filter(self, *_):
+        if not hasattr(self, "expiry_table"):
+            return
+        query = self.search_input.text().strip().lower() if hasattr(self, "search_input") else ""
+        for row_index in range(self.expiry_table.rowCount()):
+            branch_item = self.expiry_table.item(row_index, 0)
+            branch_name = branch_item.text().strip().lower() if branch_item else ""
+            self.expiry_table.setRowHidden(row_index, bool(query) and query not in branch_name)
+
     def apply_theme(self, theme):
         self.current_theme = theme
+        store.set_theme(theme)
         if theme == "dark":
             self.setStyleSheet(self.dark_stylesheet())
         else:
             self.setStyleSheet(self.light_stylesheet())
+        if hasattr(self, "expiry_table"):
+            self.apply_expiry_row_styles(self.collect_expiry_rows_from_table())
 
     def dark_stylesheet(self):
         return """
         QMainWindow, QWidget {
-            background-color: #0f172a;
+            background-color: #081120;
             color: #e2e8f0;
             font-family: Segoe UI, Arial, sans-serif;
             font-size: 13px;
@@ -306,11 +1140,34 @@ class LeaseMonitoringWindow(QMainWindow):
         QFrame#headerCard {
             background: qlineargradient(
                 x1:0, y1:0, x2:1, y2:1,
-                stop:0 #1d4ed8,
-                stop:1 #0f766e
+                stop:0 #0f4c81,
+                stop:0.55 #146c94,
+                stop:1 #19a7a0
             );
             border: none;
-            border-radius: 16px;
+            border-radius: 18px;
+            min-height: 96px;
+            max-height: 132px;
+        }
+
+        QFrame#actionBar,
+        QFrame#notificationCard {
+            background-color: #0f1b2d;
+            border: 1px solid #22324a;
+            border-radius: 18px;
+        }
+
+        QFrame#ribbonGroup {
+            background-color: transparent;
+            border: none;
+        }
+
+        QFrame#ribbonDivider {
+            background-color: #22324a;
+            border: none;
+            min-height: 58px;
+            margin-top: 6px;
+            margin-bottom: 6px;
         }
 
         QLabel#companyLabel {
@@ -322,15 +1179,15 @@ class LeaseMonitoringWindow(QMainWindow):
         }
 
         QLabel#pageTitle {
-            font-size: 24px;
-            font-weight: 800;
+            font-size: 18px;
+            font-weight: 900;
             color: white;
             background: transparent;
         }
 
         QLabel#subText {
-            font-size: 13px;
-            color: #e2e8f0;
+            font-size: 12px;
+            color: #d7e4f3;
             background: transparent;
         }
 
@@ -341,43 +1198,94 @@ class LeaseMonitoringWindow(QMainWindow):
             background: transparent;
         }
 
+        QLabel#ribbonTitle {
+            font-size: 11px;
+            font-weight: 800;
+            color: #8db4e8;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            background: transparent;
+            padding-left: 2px;
+        }
+
+        QLabel#modalLabel {
+            color: #c2ddff;
+            font-weight: 700;
+            background: transparent;
+        }
+
+        QDialog {
+            background-color: #0f1b2d;
+            color: #e2e8f0;
+        }
+
+        QLineEdit#modalField,
+        QPlainTextEdit#modalField {
+            background-color: #0b1626;
+            color: #f8fafc;
+            border: 1px solid #29405e;
+            border-radius: 10px;
+            padding: 8px 10px;
+        }
+
+        QLineEdit#modalField:read-only,
+        QPlainTextEdit#modalField:read-only {
+            background-color: #12243a;
+        }
+
+        QLineEdit#ribbonInput,
+        QComboBox#ribbonInput {
+            background-color: #0b1626;
+            color: #f8fafc;
+            border: 1px solid #29405e;
+            border-radius: 10px;
+            padding: 8px 10px;
+            min-height: 20px;
+        }
+
+        QComboBox#ribbonInput::drop-down {
+            border: none;
+            width: 20px;
+        }
+
         QPushButton {
-            background-color: #2563eb;
+            background-color: #1e63d7;
             color: white;
             border: none;
-            border-radius: 10px;
-            padding: 10px 16px;
+            border-radius: 12px;
+            padding: 11px 18px;
             font-weight: 700;
+            min-height: 20px;
         }
 
         QPushButton:hover {
-            background-color: #3b82f6;
+            background-color: #3277ea;
         }
 
         QPushButton:pressed {
-            background-color: #1d4ed8;
+            background-color: #184fb0;
         }
 
         QToolButton#settingsButton {
-            background-color: #1e293b;
+            background-color: #13243b;
             color: #f8fafc;
-            border: none;
+            border: 1px solid #29405e;
             border-radius: 18px;
-            font-size: 18px;
+            font-size: 13px;
             font-weight: 700;
-            min-width: 38px;
+            min-width: 84px;
             min-height: 38px;
-            padding: 4px;
+            padding: 4px 12px;
         }
 
         QToolButton#settingsButton:hover {
-            background-color: #334155;
+            background-color: #1a3150;
         }
 
         QMenu {
-            background-color: #111827;
+            background-color: #0f1b2d;
             color: #f8fafc;
-            border: none;
+            border: 1px solid #22324a;
             border-radius: 10px;
             padding: 8px;
         }
@@ -388,16 +1296,16 @@ class LeaseMonitoringWindow(QMainWindow):
         }
 
         QMenu::item:selected {
-            background-color: #1d4ed8;
+            background-color: #1e63d7;
         }
 
         QGroupBox {
             font-weight: 700;
-            border: none;
-            border-radius: 14px;
-            margin-top: 12px;
-            padding-top: 12px;
-            background-color: #111827;
+            border: 1px solid #22324a;
+            border-radius: 16px;
+            margin-top: 10px;
+            padding-top: 10px;
+            background-color: #0f1b2d;
         }
 
         QGroupBox::title {
@@ -407,96 +1315,108 @@ class LeaseMonitoringWindow(QMainWindow):
             color: #93c5fd;
         }
 
-        QGroupBox#infoBox,
-        QGroupBox#legendBox {
-            background-color: #111827;
-        }
-
         QLabel#legendCount {
-            background-color: #1d4ed8;
+            background-color: #1e63d7;
             color: white;
-            border-radius: 10px;
-            padding: 6px 10px;
+            border-radius: 8px;
+            padding: 4px 8px;
             font-weight: 800;
             min-width: 24px;
         }
 
         QLabel#legendText {
             color: #e5e7eb;
-            padding-left: 4px;
+            padding-left: 2px;
             background: transparent;
         }
 
         QTableWidget {
-            background-color: #111827;
-            alternate-background-color: #172033;
-            border: none;
-            border-radius: 14px;
+            background-color: #0b1626;
+            alternate-background-color: #102036;
+            border: 1px solid #22324a;
+            border-radius: 16px;
             color: #f8fafc;
-            selection-background-color: #1d4ed8;
+            selection-background-color: #2a6adf;
             selection-color: white;
-            padding: 8px;
+            padding: 10px;
             outline: 0;
+            gridline-color: #243750;
         }
 
         QHeaderView::section {
-            background-color: #1e293b;
-            color: #93c5fd;
-            padding: 10px;
-            border: none;
+            background-color: #13243b;
+            color: #c2ddff;
+            padding: 12px 10px;
+            border: 1px solid #22324a;
             font-weight: 800;
         }
 
         QTableWidget::item {
-            padding: 8px;
-            border: none;
+            padding: 10px 8px;
+            border-right: 1px solid #243750;
+            border-bottom: 1px solid #243750;
+        }
+
+        QTableWidget QLineEdit {
+            background-color: #15253a;
+            color: #f8fafc;
+            border: 2px solid #3277ea;
+            border-radius: 6px;
+            padding: 6px 8px;
+            selection-background-color: #3277ea;
+        }
+
+        QTableWidget QLineEdit:focus {
+            background-color: #1a2f48;
+            border: 2px solid #60a5fa;
+        }
+
+        QTableCornerButton::section {
+            background-color: #13243b;
+            border: 1px solid #22324a;
         }
 
         QScrollBar:vertical {
             background: transparent;
-            width: 10px;
+            width: 15px;
             margin: 4px;
             border: none;
         }
 
         QScrollBar::handle:vertical {
-            background: #334155;
-            border-radius: 5px;
-            min-height: 20px;
+            background: #48627f;
+            border-radius: 7px;
+            min-height: 34px;
         }
 
         QScrollBar::add-line:vertical,
-        QScrollBar::sub-line:vertical {
+        QScrollBar::sub-line:vertical,
+        QScrollBar::add-line:horizontal,
+        QScrollBar::sub-line:horizontal {
             border: none;
             background: none;
             height: 0px;
+            width: 0px;
         }
 
         QScrollBar:horizontal {
             background: transparent;
-            height: 10px;
+            height: 15px;
             margin: 4px;
             border: none;
         }
 
         QScrollBar::handle:horizontal {
-            background: #334155;
-            border-radius: 5px;
-            min-width: 20px;
-        }
-
-        QScrollBar::add-line:horizontal,
-        QScrollBar::sub-line:horizontal {
-            border: none;
-            background: none;
-            width: 0px;
+            background: #48627f;
+            border-radius: 7px;
+            min-width: 34px;
         }
         """
 
     def light_stylesheet(self):
         return """
         QMainWindow, QWidget {
-            background-color: #f8fafc;
+            background-color: #eef4fb;
             color: #0f172a;
             font-family: Segoe UI, Arial, sans-serif;
             font-size: 13px;
@@ -505,11 +1425,34 @@ class LeaseMonitoringWindow(QMainWindow):
         QFrame#headerCard {
             background: qlineargradient(
                 x1:0, y1:0, x2:1, y2:1,
-                stop:0 #60a5fa,
-                stop:1 #2dd4bf
+                stop:0 #d9ecff,
+                stop:0.45 #a6d7ff,
+                stop:1 #91f0dc
             );
+            border: 1px solid #b9d7f2;
+            border-radius: 18px;
+            min-height: 96px;
+            max-height: 132px;
+        }
+
+        QFrame#actionBar,
+        QFrame#notificationCard {
+            background-color: #ffffff;
+            border: 1px solid #d4dfec;
+            border-radius: 18px;
+        }
+
+        QFrame#ribbonGroup {
+            background-color: transparent;
             border: none;
-            border-radius: 16px;
+        }
+
+        QFrame#ribbonDivider {
+            background-color: #d4dfec;
+            border: none;
+            min-height: 58px;
+            margin-top: 6px;
+            margin-bottom: 6px;
         }
 
         QLabel#companyLabel {
@@ -521,15 +1464,15 @@ class LeaseMonitoringWindow(QMainWindow):
         }
 
         QLabel#pageTitle {
-            font-size: 24px;
-            font-weight: 800;
-            color: #082f49;
+            font-size: 18px;
+            font-weight: 900;
+            color: #0f3054;
             background: transparent;
         }
 
         QLabel#subText {
-            font-size: 13px;
-            color: #334155;
+            font-size: 12px;
+            color: #42556b;
             background: transparent;
         }
 
@@ -540,43 +1483,94 @@ class LeaseMonitoringWindow(QMainWindow):
             background: transparent;
         }
 
+        QLabel#ribbonTitle {
+            font-size: 11px;
+            font-weight: 800;
+            color: #5b7da7;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            background: transparent;
+            padding-left: 2px;
+        }
+
+        QLabel#modalLabel {
+            color: #27486f;
+            font-weight: 700;
+            background: transparent;
+        }
+
+        QDialog {
+            background-color: #eef4fb;
+            color: #17304d;
+        }
+
+        QLineEdit#modalField,
+        QPlainTextEdit#modalField {
+            background-color: white;
+            color: #17304d;
+            border: 1px solid #c9d8e6;
+            border-radius: 10px;
+            padding: 8px 10px;
+        }
+
+        QLineEdit#modalField:read-only,
+        QPlainTextEdit#modalField:read-only {
+            background-color: #f5f9fd;
+        }
+
+        QLineEdit#ribbonInput,
+        QComboBox#ribbonInput {
+            background-color: white;
+            color: #17304d;
+            border: 1px solid #c9d8e6;
+            border-radius: 10px;
+            padding: 8px 10px;
+            min-height: 20px;
+        }
+
+        QComboBox#ribbonInput::drop-down {
+            border: none;
+            width: 20px;
+        }
+
         QPushButton {
-            background-color: #2563eb;
+            background-color: #1f6feb;
             color: white;
             border: none;
-            border-radius: 10px;
-            padding: 10px 16px;
+            border-radius: 12px;
+            padding: 11px 18px;
             font-weight: 700;
+            min-height: 20px;
         }
 
         QPushButton:hover {
-            background-color: #3b82f6;
+            background-color: #3180fb;
         }
 
         QPushButton:pressed {
-            background-color: #1d4ed8;
+            background-color: #1859c5;
         }
 
         QToolButton#settingsButton {
-            background-color: #e2e8f0;
+            background-color: #ffffff;
             color: #0f172a;
-            border: none;
+            border: 1px solid #d4dfec;
             border-radius: 18px;
-            font-size: 18px;
+            font-size: 13px;
             font-weight: 700;
-            min-width: 38px;
+            min-width: 84px;
             min-height: 38px;
-            padding: 4px;
+            padding: 4px 12px;
         }
 
         QToolButton#settingsButton:hover {
-            background-color: #cbd5e1;
+            background-color: #f1f6fb;
         }
 
         QMenu {
             background-color: white;
             color: #0f172a;
-            border: none;
+            border: 1px solid #d4dfec;
             border-radius: 10px;
             padding: 8px;
         }
@@ -592,10 +1586,10 @@ class LeaseMonitoringWindow(QMainWindow):
 
         QGroupBox {
             font-weight: 700;
-            border: none;
-            border-radius: 14px;
-            margin-top: 12px;
-            padding-top: 12px;
+            border: 1px solid #d4dfec;
+            border-radius: 16px;
+            margin-top: 10px;
+            padding-top: 10px;
             background-color: white;
         }
 
@@ -609,92 +1603,120 @@ class LeaseMonitoringWindow(QMainWindow):
         QLabel#legendCount {
             background-color: #dbeafe;
             color: #1d4ed8;
-            border-radius: 10px;
-            padding: 6px 10px;
+            border-radius: 8px;
+            padding: 4px 8px;
             font-weight: 800;
             min-width: 24px;
         }
 
         QLabel#legendText {
             color: #334155;
-            padding-left: 4px;
+            padding-left: 2px;
             background: transparent;
         }
 
         QTableWidget {
             background-color: white;
-            alternate-background-color: #f1f5f9;
-            border: none;
-            border-radius: 14px;
+            alternate-background-color: #f7fbff;
+            border: 1px solid #d4dfec;
+            border-radius: 16px;
             color: #0f172a;
             selection-background-color: #bfdbfe;
             selection-color: #0f172a;
-            padding: 8px;
+            padding: 10px;
             outline: 0;
+            gridline-color: #d7e3ef;
         }
 
         QHeaderView::section {
-            background-color: #e2e8f0;
-            color: #1e3a8a;
-            padding: 10px;
-            border: none;
+            background-color: #edf4fb;
+            color: #173b67;
+            padding: 12px 10px;
+            border: 1px solid #d4dfec;
             font-weight: 800;
         }
 
         QTableWidget::item {
-            padding: 8px;
-            border: none;
+            padding: 10px 8px;
+            border-right: 1px solid #d7e3ef;
+            border-bottom: 1px solid #d7e3ef;
+        }
+
+        QTableWidget QLineEdit {
+            background-color: #ffffff;
+            color: #17304d;
+            border: 2px solid #3180fb;
+            border-radius: 6px;
+            padding: 6px 8px;
+            selection-background-color: #bfdbfe;
+        }
+
+        QTableWidget QLineEdit:focus {
+            background-color: #f7fbff;
+            border: 2px solid #60a5fa;
+        }
+
+        QTableCornerButton::section {
+            background-color: #edf4fb;
+            border: 1px solid #d4dfec;
         }
 
         QScrollBar:vertical {
             background: transparent;
-            width: 10px;
+            width: 15px;
             margin: 4px;
             border: none;
         }
 
         QScrollBar::handle:vertical {
-            background: #94a3b8;
-            border-radius: 5px;
-            min-height: 20px;
+            background: #8aa3be;
+            border-radius: 7px;
+            min-height: 34px;
         }
 
         QScrollBar::add-line:vertical,
-        QScrollBar::sub-line:vertical {
+        QScrollBar::sub-line:vertical,
+        QScrollBar::add-line:horizontal,
+        QScrollBar::sub-line:horizontal {
             border: none;
             background: none;
             height: 0px;
+            width: 0px;
         }
 
         QScrollBar:horizontal {
             background: transparent;
-            height: 10px;
+            height: 15px;
             margin: 4px;
             border: none;
         }
 
         QScrollBar::handle:horizontal {
-            background: #94a3b8;
-            border-radius: 5px;
-            min-width: 20px;
-        }
-
-        QScrollBar::add-line:horizontal,
-        QScrollBar::sub-line:horizontal {
-            border: none;
-            background: none;
-            width: 0px;
+            background: #8aa3be;
+            border-radius: 7px;
+            min-width: 34px;
         }
         """
 
-    # =========================================================
-    # PAGE SWITCHING
-    # =========================================================
     def show_expiry_page(self):
+        self.populate_expiry_table()
+        self.refresh_expiry_views()
         self.stacked.setCurrentWidget(self.expiry_page)
 
     def show_main_page(self):
+        if self.stacked.currentWidget() == self.expiry_page:
+            choice = self.prompt_unsaved_changes()
+            if choice == "cancel":
+                return
+        self.refresh_main_dashboard_table()
         self.stacked.setCurrentWidget(self.main_page)
+
+    def closeEvent(self, event):
+        choice = self.prompt_unsaved_changes()
+        if choice == "cancel":
+            event.ignore()
+            return
+        event.accept()
 
 
 if __name__ == "__main__":
