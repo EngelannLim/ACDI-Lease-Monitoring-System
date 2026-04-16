@@ -3,6 +3,10 @@ import os
 import sys
 from copy import deepcopy
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from PyQt6.QtCore import Qt, QSignalBlocker
 from PyQt6.QtGui import QAction, QColor, QKeySequence
 from PyQt6.QtWidgets import (
@@ -36,8 +40,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from Backend.shared_data import store
+try:
+    from Backend.shared_data import store
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
 
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    from Backend.shared_data import store
 
 class SheetTableWidget(QTableWidget):
     def keyPressEvent(self, event):
@@ -666,7 +678,7 @@ class LeaseMonitoringWindow(QMainWindow):
                 | QAbstractItemView.EditTrigger.EditKeyPressed
                 | QAbstractItemView.EditTrigger.AnyKeyPressed
             )
-            table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+            table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         else:
             table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
