@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFrame,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -27,7 +26,6 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -51,6 +49,11 @@ except ModuleNotFoundError:
         sys.path.insert(0, str(project_root))
     from Backend.shared_data import store
 
+try:
+    from Frontend.Add import AddBranchDialog
+except ModuleNotFoundError:
+    from Add import AddBranchDialog
+
 class SheetTableWidget(QTableWidget):
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -64,68 +67,6 @@ class SheetTableWidget(QTableWidget):
                 event.accept()
                 return
         super().keyPressEvent(event)
-
-
-class BranchDetailsDialog(QDialog):
-    def __init__(self, headers, values=None, title="Add Branch", parent=None, read_only=False):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.resize(760, 620)
-        self.inputs = []
-
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setContentsMargins(8, 8, 8, 8)
-
-        values = values or [""] * len(headers)
-        for index, header in enumerate(headers):
-            clean_header = header.replace("\n", " ")
-            if read_only:
-                widget = QLabel(values[index] if index < len(values) and values[index] else "-")
-                widget.setObjectName("detailValue")
-                widget.setWordWrap(True)
-            elif clean_header == "REMARKS":
-                widget = QPlainTextEdit()
-                widget.setPlainText(values[index] if index < len(values) else "")
-                widget.setFixedHeight(90)
-            else:
-                widget = QLineEdit(values[index] if index < len(values) else "")
-
-            if not read_only:
-                widget.setReadOnly(read_only)
-                widget.setObjectName("modalField")
-            label = QLabel(clean_header)
-            label.setObjectName("modalLabel")
-            form.addRow(label, widget)
-            self.inputs.append(widget)
-
-        layout.addLayout(form)
-
-        buttons = QDialogButtonBox(self)
-        if read_only:
-            self.delete_button = buttons.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
-            self.cancel_button = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
-            self.delete_button.clicked.connect(self.accept)
-            self.cancel_button.clicked.connect(self.reject)
-        else:
-            self.save_button = buttons.addButton("Add Branch", QDialogButtonBox.ButtonRole.AcceptRole)
-            self.cancel_button = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
-            self.save_button.clicked.connect(self.accept)
-            self.cancel_button.clicked.connect(self.reject)
-
-        layout.addWidget(buttons)
-
-    def values(self):
-        data = []
-        for widget in self.inputs:
-            if isinstance(widget, QPlainTextEdit):
-                data.append(widget.toPlainText().strip())
-            elif isinstance(widget, QLabel):
-                data.append(widget.text().strip())
-            else:
-                data.append(widget.text().strip())
-        return data
 
 
 class NotificationsDialog(QDialog):
@@ -969,7 +910,13 @@ class LeaseMonitoringWindow(QMainWindow):
 
     def add_expiry_row(self):
         default_row = ["", "", "", "1 YR", "", "", "", "", "", "", "", "", "FOR RENEW / ESCALATION"]
-        dialog = BranchDetailsDialog(self.EXPIRY_HEADERS, default_row, "Add Branch", self)
+        dialog = AddBranchDialog(
+            self.EXPIRY_HEADERS,
+            default_row,
+            self,
+            title="Add Branch",
+            theme=self.current_theme,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -998,22 +945,10 @@ class LeaseMonitoringWindow(QMainWindow):
             QMessageBox.information(self, "Delete Branch", "Please select one branch row at a time.")
             return
 
-        row_index = selected_rows[0]
-        row_values = []
-        for col_index in range(self.expiry_table.columnCount()):
-            item = self.expiry_table.item(row_index, col_index)
-            row_values.append(item.text() if item else "")
-
-        dialog = BranchDetailsDialog(
-            self.EXPIRY_HEADERS,
-            row_values,
-            "Delete Branch",
-            self,
-            read_only=True,
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if not self.confirm_delete_action():
             return
 
+        row_index = selected_rows[0]
         previous_rows = self.collect_expiry_rows_from_table()
         self.expiry_table_updating = True
         self.expiry_table.removeRow(row_index)
