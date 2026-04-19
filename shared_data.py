@@ -9,6 +9,17 @@ from mysql.connector import Error
 
 
 class LeaseDataStore:
+    DASHBOARD_STAGE_FLOW = [
+        ("LEGAL", "LEGAL"),
+        ("VLG HEAD", "VLG H"),
+        ("GSD OFFICER", "GSD"),
+        ("AD OFFICER", "AD"),
+        ("OD OFFICER", "OD"),
+        ("VP-ASSIGNED OTD", "VP-ASSIGNED OTD"),
+        ("EVPO-EVPA", "EVPO-EVPA"),
+        ("PRESIDENT", "PRESIDENT"),
+    ]
+
     DATE_FORMATS = (
         "%d-%b-%y",
         "%d-%b-%Y",
@@ -30,6 +41,8 @@ class LeaseDataStore:
             "ui_settings": {
                 "theme": "dark",
                 "contract_documents": "{}",
+                "dashboard_stage_statuses": "{}",
+                "dashboard_remark_overrides": "{}",
             },
             "main_dashboard_rows": [
                 [
@@ -471,10 +484,18 @@ class LeaseDataStore:
             return "Approved"
         allowed = {
             "for legal review": "For Legal Review",
+            "for vlg review": "For VLG Head Review",
+            "for vlg head review": "For VLG Head Review",
             "for gsd review": "For GSD Review",
             "for ad review": "For AD Review",
             "for od review": "For OD Review",
+            "for vp-assigned otd review": "For VP-Assigned OTD Review",
+            "for vp assigned otd review": "For VP-Assigned OTD Review",
+            "for evpo-evpa review": "For EVPO-EVPA Review",
+            "for evpo evpa review": "For EVPO-EVPA Review",
             "for evp approval": "For EVP Approval",
+            "for president approval": "For President Approval",
+            "for president review": "For President Approval",
             "approved": "Approved",
             "done": "Done",
         }
@@ -484,11 +505,15 @@ class LeaseDataStore:
         status = self.manual_status_for(row).lower()
         mapping = {
             "for legal review": "LEGAL",
+            "for vlg head review": "VLG HEAD",
             "for gsd review": "GSD OFFICER",
             "for ad review": "AD OFFICER",
             "for od review": "OD OFFICER",
-            "for evp approval": "EVP / PRESIDENT",
-            "approved": "APPROVED / RELEASE",
+            "for vp-assigned otd review": "VP-ASSIGNED OTD",
+            "for evpo-evpa review": "EVPO-EVPA",
+            "for evp approval": "EVPO-EVPA",
+            "for president approval": "PRESIDENT",
+            "approved": "COMPLETED",
             "done": "COMPLETED",
         }
         if status in mapping:
@@ -499,6 +524,40 @@ class LeaseDataStore:
         if contract_state == "expired":
             return "EXPIRED"
         return "LEGAL"
+
+    def dashboard_stage_cells_for(self, contract_status, pending_stage):
+        cells = []
+        pending_index = next(
+            (index for index, (stage_key, _label) in enumerate(self.DASHBOARD_STAGE_FLOW) if stage_key == pending_stage),
+            None,
+        )
+
+        for index, (_stage_key, label) in enumerate(self.DASHBOARD_STAGE_FLOW):
+            if contract_status == "done" or pending_stage == "COMPLETED":
+                cells.append(f"COMPLETE {label}")
+                continue
+
+            if contract_status == "expired":
+                if pending_index is not None and index < pending_index:
+                    cells.append(f"COMPLETE {label}")
+                elif pending_index is not None and index == pending_index:
+                    cells.append(f"EXPIRED {label}")
+                else:
+                    cells.append("")
+                continue
+
+            if pending_index is None:
+                cells.append("")
+                continue
+
+            if index < pending_index:
+                cells.append(f"COMPLETE {label}")
+            elif index == pending_index:
+                cells.append(f"FOR ACTION {label}" if contract_status == "due" else "PENDING")
+            else:
+                cells.append("")
+
+        return cells
 
     def contract_status_for(self, row):
         remarks = str(row[12]).strip().lower()
@@ -566,6 +625,105 @@ class LeaseDataStore:
             return json.loads(raw_value)
         except json.JSONDecodeError:
             return {}
+
+    def get_dashboard_stage_statuses(self):
+        raw_value = self.ui_settings.get("dashboard_stage_statuses", "{}")
+        try:
+            statuses = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        return statuses if isinstance(statuses, dict) else {}
+
+    def dashboard_stage_state_from_text(self, value):
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return {"status": "new", "completed_on": ""}
+        if "pending" in normalized or "for action" in normalized:
+            return {"status": "pending_action", "completed_on": ""}
+        if "progress" in normalized:
+            return {"status": "in_progress", "completed_on": ""}
+        if (
+            "ok" in normalized
+            or "complete" in normalized
+            or "completed" in normalized
+            or "approved" in normalized
+            or "done" in normalized
+        ):
+            return {"status": "complete", "completed_on": ""}
+        if "new" in normalized:
+            return {"status": "new", "completed_on": ""}
+        return {"status": "new", "completed_on": ""}
+
+    def main_dashboard_row_key(self, row):
+        return " | ".join(str(row[index]).strip() for index in (0, 1, 2, 3))
+
+    def get_dashboard_stage_state(self, row, column_index):
+        row_key = self.main_dashboard_row_key(row)
+        statuses = self.get_dashboard_stage_statuses()
+        row_statuses = statuses.get(row_key, {})
+        state = row_statuses.get(str(column_index), {})
+        if isinstance(state, dict) and state.get("status"):
+            return {
+                "status": str(state.get("status", "new")),
+                "completed_on": str(state.get("completed_on", "")).strip(),
+            }
+        if column_index < len(row):
+            return self.dashboard_stage_state_from_text(row[column_index])
+        return {"status": "new", "completed_on": ""}
+
+    def set_dashboard_stage_state(self, row, column_index, status, completed_on=""):
+        row_key = self.main_dashboard_row_key(row)
+        statuses = self.get_dashboard_stage_statuses()
+        row_statuses = statuses.get(row_key, {})
+        row_statuses[str(column_index)] = {
+            "status": str(status),
+            "completed_on": str(completed_on).strip(),
+        }
+        statuses[row_key] = row_statuses
+        self.ui_settings["dashboard_stage_statuses"] = json.dumps(statuses)
+        self.save()
+
+    def clear_dashboard_stage_states_after(self, row, column_index):
+        row_key = self.main_dashboard_row_key(row)
+        statuses = self.get_dashboard_stage_statuses()
+        row_statuses = statuses.get(row_key, {})
+        filtered = {}
+        for key, value in row_statuses.items():
+            try:
+                current_column = int(key)
+            except (TypeError, ValueError):
+                continue
+            if current_column <= column_index:
+                filtered[key] = value
+        statuses[row_key] = filtered
+        self.ui_settings["dashboard_stage_statuses"] = json.dumps(statuses)
+        self.save()
+
+    def get_dashboard_remark_overrides(self):
+        raw_value = self.ui_settings.get("dashboard_remark_overrides", "{}")
+        try:
+            overrides = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        return overrides if isinstance(overrides, dict) else {}
+
+    def get_dashboard_remark_override(self, row):
+        return str(self.get_dashboard_remark_overrides().get(self.main_dashboard_row_key(row), "")).strip()
+
+    def set_dashboard_remark(self, row, remark):
+        row_key = self.main_dashboard_row_key(row)
+        remark_text = str(remark).strip()
+
+        for index, current_row in enumerate(self.main_dashboard_rows):
+            if self.main_dashboard_row_key(current_row) == row_key:
+                self.main_dashboard_rows[index][12] = remark_text
+                self.save()
+                return
+
+        overrides = self.get_dashboard_remark_overrides()
+        overrides[row_key] = remark_text
+        self.ui_settings["dashboard_remark_overrides"] = json.dumps(overrides)
+        self.save()
 
     def contract_document_key(self, row):
         return " | ".join(
@@ -699,6 +857,9 @@ class LeaseDataStore:
         return " | ".join([part for part in parts if part.strip()])
 
     def dashboard_remark_for(self, row, status):
+        override = self.get_dashboard_remark_override(row)
+        if override:
+            return override
         officer = row[4].strip() or "Officer not assigned"
         contact = row[5].strip() or "No contact"
         reminder = self.reminder_date_for(row)
@@ -729,20 +890,14 @@ class LeaseDataStore:
                 continue
             status = self.contract_status_for(row)
             pending_stage = self.pending_stage_for(row)
+            stage_cells = self.dashboard_stage_cells_for(status, pending_stage)
             generated_rows.append(
                 [
                     row[1].strip() or row[2].strip() or row[7].strip(),
                     self.dashboard_title_for(row),
                     "",
                     row[10].strip(),
-                    "PENDING" if pending_stage == "LEGAL" else self.routing_text_for(status, "LEGAL"),
-                    "PENDING" if pending_stage == "VLG HEAD" else self.routing_text_for(status, "VLG H"),
-                    "PENDING" if pending_stage == "GSD OFFICER" else self.routing_text_for(status, "GSD"),
-                    "PENDING" if pending_stage == "AD OFFICER" else self.routing_text_for(status, "AD"),
-                    "PENDING" if pending_stage == "OD OFFICER" else self.routing_text_for(status, "OD"),
-                    "PENDING" if pending_stage == "AVP" else self.routing_text_for(status, "VP-ASSIGNED OTD"),
-                    "PENDING" if pending_stage == "EVP / PRESIDENT" else self.routing_text_for(status, "EVPO-EVPA"),
-                    "PENDING" if pending_stage == "EVP / PRESIDENT" else self.routing_text_for(status, "PRESIDENT"),
+                    *stage_cells,
                     self.dashboard_remark_for(row, status),
                 ]
             )
